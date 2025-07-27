@@ -1,7 +1,7 @@
 {
+  "main": "api/[[...slug]].js",
   "scripts": {
     "start": "node server.js",
-    "main": "api/index.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
