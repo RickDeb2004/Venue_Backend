@@ -312,14 +312,18 @@ router.post(
       } catch (geoErr) {
         console.warn("⚠️ maps.co geocoding failed:", geoErr.message);
       }
-
+ const sportsWithDiscount = sports.map(sport => ({
+        name: sport.name,
+        slotPrice: sport.slotPrice,
+        discountedPrice: sport.discountedPrice ?? 0 // default to 0 if missing
+      }));
       // 🧾 Step 3: Prepare turf data
       const turfData = {
         title,
         address,
         description,
         timeSlots, // [{ open, close }]
-        sports, // [{ name: "football", slotPrice: 500 }]
+        sports: sportsWithDiscount, // [{ name: "football", slotPrice: 500 }]
         courts, // ["Court A", "Court B"]
         amenities, // ["wifi", "parking", ...]
         rules, // ["No smoking", ...]
