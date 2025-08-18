@@ -83,6 +83,73 @@ router.post("/admin/vendors", checkAdminAuth, async (req, res) => {
   }
 });
 
+// GET all vendors
+router.get("/admin/vendors", checkAdminAuth, async (req, res) => {
+  try {
+    const snapshot = await db.collection("vendors").get();
+
+    if (snapshot.empty) {
+      return res.status(404).json({ message: "No vendors found" });
+    }
+
+    const vendors = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.status(200).json({ vendors });
+  } catch (err) {
+    console.error("Error fetching vendors:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    const { name, phone, location } = req.body;
+
+    const vendorRef = db.collection("vendors").doc(vendorId);
+    const doc = await vendorRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    const updateData = {};
+    if (name) updateData.name = name;
+    if (phone) updateData.phone = phone;
+    if (location) updateData.location = location;
+
+    await vendorRef.update(updateData);
+
+    res.status(200).json({ message: "Vendor updated successfully" });
+  } catch (err) {
+    console.error("Error updating vendor:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+
+    const vendorRef = db.collection("vendors").doc(vendorId);
+    const doc = await vendorRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ message: "Vendor not found" });
+    }
+
+    await vendorRef.delete();
+
+    res.status(200).json({ message: "Vendor deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting vendor:", err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
 // router.post(
 //   "/admin/vendors/:vendorId/turfs",
 //   checkAdminAuth,
@@ -312,11 +379,34 @@ router.post(
       } catch (geoErr) {
         console.warn("⚠️ maps.co geocoding failed:", geoErr.message);
       }
- const sportsWithDiscount = sports.map(sport => ({
+      const sportsWithDiscount = sports.map((sport) => ({
         name: sport.name,
         slotPrice: sport.slotPrice,
-        discountedPrice: sport.discountedPrice ?? 0 // default to 0 if missing
+        discountedPrice: sport.discountedPrice ?? 0, // default to 0 if missing
       }));
+
+      let amenitiesData = [];
+      if (amenities && amenities.length > 0) {
+        const amenitiesPromises = amenities.map((id) =>
+          db.collection("amenities_master").doc(id).get()
+        );
+        const amenitiesDocs = await Promise.all(amenitiesPromises);
+        amenitiesData = amenitiesDocs
+          .filter((doc) => doc.exists)
+          .map((doc) => ({ id: doc.id, ...doc.data() }));
+      }
+
+      // Fetch rules details
+      let rulesData = [];
+      if (rules && rules.length > 0) {
+        const rulesPromises = rules.map((id) =>
+          db.collection("rules_master").doc(id).get()
+        );
+        const rulesDocs = await Promise.all(rulesPromises);
+        rulesData = rulesDocs
+          .filter((doc) => doc.exists)
+          .map((doc) => ({ id: doc.id, ...doc.data() }));
+      }
       // 🧾 Step 3: Prepare turf data
       const turfData = {
         title,
@@ -325,13 +415,14 @@ router.post(
         timeSlots, // [{ open, close }]
         sports: sportsWithDiscount, // [{ name: "football", slotPrice: 500 }]
         courts, // ["Court A", "Court B"]
-        amenities, // ["wifi", "parking", ...]
-        rules, // ["No smoking", ...]
+        amenities: amenitiesData, // ["wifi", "parking", ...]
+        rules: rulesData, // ["No smoking", ...]
         images, // [URLs]
         location: location || null,
         createdAt: new Date().toISOString(),
         cancellationHours, // default 0 if not provided
         featured,
+        vendorId, // store vendor ID for easy reference
       };
 
       // 💾 Step 4: Save to Firestore
@@ -339,6 +430,7 @@ router.post(
 
       res.status(201).json({
         message: "Turf added successfully",
+        vendorId: vendorId,
         turfId: turfRef.id,
         turf: turfData, // ✅ include full saved data in response
       });
@@ -769,6 +861,135 @@ router.post("/admin/tax", checkAdminAuth, async (req, res) => {
   } catch (err) {
     console.error("Failed to set tax:", err);
     res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// CREATE Amenity
+router.post("/admin/amenities", checkAdminAuth, async (req, res) => {
+  try {
+    const { name, description = "", icon = "" } = req.body;
+
+    // Validate only the name field
+    if (!name || name.trim() === "") {
+      return res.status(400).json({ error: "Name field is required" });
+    }
+
+    const newAmenity = { name, description, icon };
+    const docRef = await db.collection("amenities_master").add(newAmenity);
+
+    res.status(201).json({ id: docRef.id, ...newAmenity });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/admin/amenities", checkAdminAuth, async (req, res) => {
+  try {
+    const snapshot = await db.collection("amenities_master").get();
+    const amenities = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    }));
+
+    res.status(200).json(amenities);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// UPDATE Amenity
+router.put("/admin/amenities/:id", checkAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description, icon } = req.body;
+
+    const docRef = db.collection("amenities_master").doc(id);
+    const docSnapshot = await docRef.get();
+
+    if (!docSnapshot.exists) {
+      return res.status(404).json({ error: "Amenity not found" });
+    }
+
+    await docRef.update({ name, description, icon });
+
+    res.status(200).json({ message: "Amenity updated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE Amenity
+router.delete("/admin/amenities/:id", checkAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const docRef = db.collection("amenities_master").doc(id);
+
+    const docSnapshot = await docRef.get();
+    if (!docSnapshot.exists) {
+      return res.status(404).json({ error: "Amenity not found" });
+    }
+
+    await docRef.delete();
+    res.status(200).json({ message: "Amenity deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post("/admin/rules", checkAdminAuth, async (req, res) => {
+  try {
+    const { name, description } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Rule name is required" });
+    }
+
+    const newRule = { name, description: description || "" };
+    const docRef = await db.collection("rules_master").add(newRule);
+
+    res.status(201).json({ id: docRef.id, ...newRule });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.get("/admin/rules", checkAdminAuth, async (req, res) => {
+  try {
+    const snapshot = await db.collection("rules_master").get();
+    const rules = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
+    res.status(200).json(rules);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.put("/admin/rules/:id", checkAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, description } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Rule name is required" });
+    }
+
+    await db
+      .collection("rules_master")
+      .doc(id)
+      .update({ name, description: description || "" });
+    res.status(200).json({ message: "Rule updated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete("/admin/rules/:id", checkAdminAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.collection("rules_master").doc(id).delete();
+    res.status(200).json({ message: "Rule deleted successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
