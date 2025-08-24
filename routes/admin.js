@@ -107,7 +107,7 @@ router.get("/admin/vendors", checkAdminAuth, async (req, res) => {
 router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
   try {
     const { vendorId } = req.params;
-    const { name, phone, location } = req.body;
+    const { name, phone, location, email } = req.body;
 
     const vendorRef = db.collection("vendors").doc(vendorId);
     const doc = await vendorRef.get();
@@ -120,6 +120,14 @@ router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
     if (name) updateData.name = name;
     if (phone) updateData.phone = phone;
     if (location) updateData.location = location;
+    if (email) {
+      // Simple validation for email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      updateData.email = email;
+    }
 
     await vendorRef.update(updateData);
 
@@ -129,7 +137,6 @@ router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
 router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
   try {
     const { vendorId } = req.params;
