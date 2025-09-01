@@ -4,6 +4,7 @@ const jwt = require("jsonwebtoken");
 const { db } = require("../firebase/firebase");
 const { checkAdminAuth } = require("../middleware/auth");
 const axios = require("axios");
+const { resolveShortUrl, extractLatLngFromUrl } = require("../utils/mapUtils");
 router.post("/admin/login", async (req, res) => {
   const { email, password } = req.body;
 
@@ -44,45 +45,66 @@ const generatePassword = () => Math.random().toString(36).slice(-8); // 8-char
 
 router.post("/admin/vendors", checkAdminAuth, async (req, res) => {
   try {
-    const { name, phone, location } = req.body;
+    const { name, phone, location, gpsUrl } = req.body;
 
-    if (!name || !phone || !location) {
+    if (!name || !phone || !location || !gpsUrl) {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // 1. Generate random email + password
+    // 1) Resolve short URL (maps.app.goo.gl) if present; fall back to original on failure
+    let finalUrl = gpsUrl;
+    try {
+      finalUrl = await resolveShortUrl(gpsUrl); // returns same URL if already full
+    } catch (_) {
+      // ignore resolution errors; we'll try parsing the original url
+    }
+
+    // 2) Extract lat/lng from the resolved URL; fallback to original if needed
+    const coords =
+      extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(gpsUrl);
+
+    if (!coords) {
+      return res.status(400).json({
+        message:
+          "Could not extract coordinates from the provided GPS URL. Please share a valid Google Maps link.",
+      });
+    }
+
+    // 3) Generate random email + password
     const randomId = generateRandomId();
     const email = `vendor_${randomId}@venuemgmt.com`;
     const password = generatePassword();
 
-    // 2. Save vendor document
+    // 4) Save vendor document
     const newVendorRef = db.collection("vendors").doc(); // auto ID
     const vendorData = {
       name,
       email,
       phone,
-      password,
+      password, // plain for now (as you requested)
       location,
+      gpsUrl, // store the URL the admin provided
+      coordinates: {
+        lat: coords.lat,
+        lng: coords.lng,
+      },
       createdAt: new Date().toISOString(),
     };
 
     await newVendorRef.set(vendorData);
 
-    // 3. Return login credentials
-    res.status(201).json({
+    // 5) Return login credentials
+    return res.status(201).json({
       message: "Vendor created successfully",
       vendorId: newVendorRef.id,
-      login: {
-        email,
-        password,
-      },
+      login: { email, password },
+      coordinates: vendorData.coordinates,
     });
   } catch (err) {
     console.error("Error creating vendor:", err);
-    res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({ message: "Internal server error" });
   }
 });
-
 // GET all vendors
 router.get("/admin/vendors", checkAdminAuth, async (req, res) => {
   try {
@@ -107,7 +129,7 @@ router.get("/admin/vendors", checkAdminAuth, async (req, res) => {
 router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
   try {
     const { vendorId } = req.params;
-    const { name, phone, location, email } = req.body;
+    const { name, phone, location, email, gpsUrl, password } = req.body;
 
     const vendorRef = db.collection("vendors").doc(vendorId);
     const doc = await vendorRef.get();
@@ -128,15 +150,53 @@ router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
       }
       updateData.email = email;
     }
+    if (password) updateData.password = password;
+    if (gpsUrl) {
+      updateData.gpsUrl = gpsUrl;
 
+      // 1) Resolve short URL if needed
+      let finalUrl = gpsUrl;
+      try {
+        finalUrl = await resolveShortUrl(gpsUrl);
+      } catch (_) {
+        console.log("Failed to resolve short URL, using original.");
+      }
+
+      // 2) Extract coordinates
+      const coords =
+        extractLatLngFromUrl(finalUrl) || extractLatLngFromUrl(gpsUrl);
+
+      if (!coords) {
+        return res.status(400).json({
+          message:
+            "Could not extract coordinates from the provided GPS URL. Please share a valid Google Maps link.",
+        });
+      }
+
+      updateData.coordinates = {
+        lat: coords.lat,
+        lng: coords.lng,
+      };
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      return res.status(400).json({
+        message: "No fields provided for update",
+      });
+    }
     await vendorRef.update(updateData);
 
-    res.status(200).json({ message: "Vendor updated successfully" });
+    return res.status(200).json({
+      message: "Vendor updated successfully",
+      vendorId,
+      updatedFields: updateData,
+    });
   } catch (err) {
     console.error("Error updating vendor:", err);
-    res.status(500).json({ message: "Internal server error" });
+    return res.status(500).json({ message: "Internal server error" });
   }
 });
+
 router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
   try {
     const { vendorId } = req.params;
@@ -321,6 +381,133 @@ router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
 //   }
 // );
 
+// router.post(
+//   "/admin/vendors/:vendorId/turfs",
+//   checkAdminAuth,
+//   async (req, res) => {
+//     try {
+//       const { vendorId } = req.params;
+//       const {
+//         title,
+//         address,
+//         description,
+//         timeSlots,
+//         sports,
+//         courts,
+//         amenities,
+//         rules,
+//         images,
+//         cancellationHours = 0,
+//         featured = 0,
+//       } = req.body;
+
+//       if (
+//         !title ||
+//         !address ||
+//         !description ||
+//         !timeSlots ||
+//         !sports ||
+//         !courts ||
+//         !amenities ||
+//         !rules ||
+//         !images
+//       ) {
+//         return res
+//           .status(400)
+//           .json({ message: "Missing required turf fields" });
+//       }
+
+//       // 🔍 Step 1: Check vendor exists
+//       const vendorRef = db.collection("vendors").doc(vendorId);
+//       const vendorDoc = await vendorRef.get();
+
+//       if (!vendorDoc.exists) {
+//         return res.status(404).json({ message: "Vendor not found" });
+//       }
+
+//       // 📍 Step 2: Geocode the actual `address` from req.body (not hardcoded)
+//       let location = null;
+//       try {
+//         const encodedAddress = encodeURIComponent(address); // ✅ correct usage
+//         const geoUrl = `https://geocode.maps.co/search?q=${encodedAddress}&api_key=${process.env.MAPSCO_API_KEY}`;
+
+//         const response = await axios.get(geoUrl);
+//         const result =
+//           response.data && response.data.length > 0 ? response.data[0] : null;
+
+//         if (result) {
+//           location = {
+//             latitude: parseFloat(result.lat),
+//             longitude: parseFloat(result.lon),
+//           };
+//         } else {
+//           console.warn("⚠️ No valid geocode result for:", address);
+//         }
+//       } catch (geoErr) {
+//         console.warn("⚠️ maps.co geocoding failed:", geoErr.message);
+//       }
+//       const sportsWithDiscount = sports.map((sport) => ({
+//         name: sport.name,
+//         slotPrice: sport.slotPrice,
+//         discountedPrice: sport.discountedPrice ?? 0, // default to 0 if missing
+//       }));
+
+//       let amenitiesData = [];
+//       if (amenities && amenities.length > 0) {
+//         const amenitiesPromises = amenities.map((id) =>
+//           db.collection("amenities_master").doc(id).get()
+//         );
+//         const amenitiesDocs = await Promise.all(amenitiesPromises);
+//         amenitiesData = amenitiesDocs
+//           .filter((doc) => doc.exists)
+//           .map((doc) => ({ id: doc.id, ...doc.data() }));
+//       }
+
+//       // Fetch rules details
+//       let rulesData = [];
+//       if (rules && rules.length > 0) {
+//         const rulesPromises = rules.map((id) =>
+//           db.collection("rules_master").doc(id).get()
+//         );
+//         const rulesDocs = await Promise.all(rulesPromises);
+//         rulesData = rulesDocs
+//           .filter((doc) => doc.exists)
+//           .map((doc) => ({ id: doc.id, ...doc.data() }));
+//       }
+//       // 🧾 Step 3: Prepare turf data
+//       const turfData = {
+//         title,
+//         address,
+//         description,
+//         timeSlots, // [{ open, close }]
+//         sports: sportsWithDiscount, // [{ name: "football", slotPrice: 500 }]
+//         courts, // ["Court A", "Court B"]
+//         amenities: amenitiesData, // ["wifi", "parking", ...]
+//         rules: rulesData, // ["No smoking", ...]
+//         images, // [URLs]
+//         location: location || null,
+//         createdAt: new Date().toISOString(),
+//         cancellationHours, // default 0 if not provided
+//         featured,
+//         vendorId, // store vendor ID for easy reference
+//       };
+
+//       // 💾 Step 4: Save to Firestore
+//       const turfRef = await vendorRef.collection("turfs").add(turfData);
+
+//       res.status(201).json({
+//         message: "Turf added successfully",
+//         vendorId: vendorId,
+//         turfId: turfRef.id,
+//         turf: turfData, // ✅ include full saved data in response
+//       });
+//     } catch (err) {
+//       console.error("❌ Error adding turf:", err);
+//       res.status(500).json({ message: "Internal server error" });
+//     }
+//   }
+// );
+
 router.post(
   "/admin/vendors/:vendorId/turfs",
   checkAdminAuth,
@@ -331,9 +518,7 @@ router.post(
         title,
         address,
         description,
-        timeSlots,
         sports,
-        courts,
         amenities,
         rules,
         images,
@@ -345,9 +530,7 @@ router.post(
         !title ||
         !address ||
         !description ||
-        !timeSlots ||
         !sports ||
-        !courts ||
         !amenities ||
         !rules ||
         !images
@@ -357,7 +540,7 @@ router.post(
           .json({ message: "Missing required turf fields" });
       }
 
-      // 🔍 Step 1: Check vendor exists
+      // ✅ Step 1: Fetch vendor details
       const vendorRef = db.collection("vendors").doc(vendorId);
       const vendorDoc = await vendorRef.get();
 
@@ -365,81 +548,82 @@ router.post(
         return res.status(404).json({ message: "Vendor not found" });
       }
 
-      // 📍 Step 2: Geocode the actual `address` from req.body (not hardcoded)
-      let location = null;
-      try {
-        const encodedAddress = encodeURIComponent(address); // ✅ correct usage
-        const geoUrl = `https://geocode.maps.co/search?q=${encodedAddress}&api_key=${process.env.MAPSCO_API_KEY}`;
+      const vendorData = vendorDoc.data();
+      const vendorLocation = vendorData.location || "";
+      const vendorGpsUrl = vendorData.gpsUrl || "";
+      const vendorCoordinates = vendorData.coordinates || null;
 
-        const response = await axios.get(geoUrl);
-        const result =
-          response.data && response.data.length > 0 ? response.data[0] : null;
-
-        if (result) {
-          location = {
-            latitude: parseFloat(result.lat),
-            longitude: parseFloat(result.lon),
-          };
-        } else {
-          console.warn("⚠️ No valid geocode result for:", address);
-        }
-      } catch (geoErr) {
-        console.warn("⚠️ maps.co geocoding failed:", geoErr.message);
-      }
-      const sportsWithDiscount = sports.map((sport) => ({
+      // ✅ Step 2: Process sports with courts & details
+      // sports format in request:
+      // [
+      //   {
+      //     name: "Football",
+      //     slotPrice: 500,
+      //     discountedPrice: 400,
+      //     weekendPrice: 600,
+      //     timings: [{ start: "06:00", end: "10:00" }],
+      //     courts: ["Court A", "Court B"]
+      //   }
+      // ]
+      const sportsData = sports.map((sport) => ({
         name: sport.name,
         slotPrice: sport.slotPrice,
-        discountedPrice: sport.discountedPrice ?? 0, // default to 0 if missing
+        discountedPrice: sport.discountedPrice ?? 0,
+        weekendPrice: sport.weekendPrice ?? 0,
+        timings: sport.timings || [],
+        courts: sport.courts || [],
       }));
 
+      // ✅ Step 3: Fetch amenities details
       let amenitiesData = [];
-      if (amenities && amenities.length > 0) {
-        const amenitiesPromises = amenities.map((id) =>
-          db.collection("amenities_master").doc(id).get()
+      if (amenities.length > 0) {
+        const amenitiesDocs = await Promise.all(
+          amenities.map((id) => db.collection("amenities_master").doc(id).get())
         );
-        const amenitiesDocs = await Promise.all(amenitiesPromises);
         amenitiesData = amenitiesDocs
           .filter((doc) => doc.exists)
           .map((doc) => ({ id: doc.id, ...doc.data() }));
       }
 
-      // Fetch rules details
+      // ✅ Step 4: Fetch rules details
       let rulesData = [];
-      if (rules && rules.length > 0) {
-        const rulesPromises = rules.map((id) =>
-          db.collection("rules_master").doc(id).get()
+      if (rules.length > 0) {
+        const rulesDocs = await Promise.all(
+          rules.map((id) => db.collection("rules_master").doc(id).get())
         );
-        const rulesDocs = await Promise.all(rulesPromises);
         rulesData = rulesDocs
           .filter((doc) => doc.exists)
           .map((doc) => ({ id: doc.id, ...doc.data() }));
       }
-      // 🧾 Step 3: Prepare turf data
+
+      // ✅ Step 5: Prepare turf data
       const turfData = {
         title,
         address,
         description,
-        timeSlots, // [{ open, close }]
-        sports: sportsWithDiscount, // [{ name: "football", slotPrice: 500 }]
-        courts, // ["Court A", "Court B"]
-        amenities: amenitiesData, // ["wifi", "parking", ...]
-        rules: rulesData, // ["No smoking", ...]
-        images, // [URLs]
-        location: location || null,
+        sports: sportsData,
+        amenities: amenitiesData,
+        rules: rulesData,
+        images,
+        vendorId,
+        vendorLocation,
+        vendorGpsUrl,
+        vendorCoordinates,
         createdAt: new Date().toISOString(),
-        cancellationHours, // default 0 if not provided
+        cancellationHours,
         featured,
-        vendorId, // store vendor ID for easy reference
+        isSuspended: 0, // default active
       };
 
-      // 💾 Step 4: Save to Firestore
+      // ✅ Step 6: Save to Firestore
       const turfRef = await vendorRef.collection("turfs").add(turfData);
 
+      // ✅ Step 7: Return response
       res.status(201).json({
         message: "Turf added successfully",
-        vendorId: vendorId,
+        vendorId,
         turfId: turfRef.id,
-        turf: turfData, // ✅ include full saved data in response
+        turf: turfData,
       });
     } catch (err) {
       console.error("❌ Error adding turf:", err);
@@ -448,7 +632,7 @@ router.post(
   }
 );
 
-router.get("/vendors/:id/turfs", async (req, res) => {
+router.get("/vendors/:id/turfs", checkAdminAuth,async (req, res) => {
   try {
     const vendorId = req.params.id;
 
@@ -488,6 +672,9 @@ router.get("/vendors/:id/turfs", async (req, res) => {
         closeTime,
         createdAt: turf.createdAt,
         thumbnail: turf.images?.[0] || null,
+        cancellationHour: turf.cancellationHour || null, // ✅ New Field
+        featured: turf.featured || false, // ✅ New Field
+        isSuspended: turf.isSuspended || false // ✅ New Field
       });
     });
 
@@ -497,6 +684,7 @@ router.get("/vendors/:id/turfs", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
 
 router.get("/admin/turfs", checkAdminAuth, async (req, res) => {
   try {
@@ -577,6 +765,45 @@ router.put(
     }
   }
 );
+
+router.patch("/admin/turfs/:vendorId/:turfId/suspend",checkAdminAuth, async (req, res) => {
+  try {
+    const { vendorId, turfId } = req.params;
+    const { isSuspended } = req.body; // 1 or 0
+
+    if (typeof isSuspended === "undefined") {
+      return res.status(400).json({ message: "isSuspended is required" });
+    }
+
+    // Turf reference
+    const turfRef = db.collection("vendors").doc(vendorId).collection("turfs").doc(turfId);
+    const turfDoc = await turfRef.get();
+
+    if (!turfDoc.exists) {
+      return res.status(404).json({ message: "Turf not found" });
+    }
+
+    // Update the turf
+    await turfRef.update({ isSuspended: Number(isSuspended) });
+
+    // Fetch updated turf
+    const updatedTurfDoc = await turfRef.get();
+    const updatedTurf = updatedTurfDoc.data();
+
+    // Add turfId to the response for clarity
+    updatedTurf.turfId = turfId;
+
+    res.status(200).json({
+      message: isSuspended == 1 ? "Turf suspended successfully" : "Turf unsuspended successfully",
+      turf: updatedTurf,
+    });
+  } catch (error) {
+    console.error("Error updating turf suspension:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
 
 router.delete(
   "/admin/vendors/:vendorId/turfs/:turfId",

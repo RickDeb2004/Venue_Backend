@@ -424,6 +424,58 @@ router.get("/users/turfs/:turfId", async (req, res) => {
   }
 });
 
+// router.post("/bookings/available-slots", checkUserAuth, async (req, res) => {
+//   try {
+//     const { vendorId, turfId, date, sports } = req.body;
+
+//     if (!vendorId || !turfId || !date || !sports) {
+//       return res.status(400).json({ message: "Missing required fields" });
+//     }
+
+//     // 🔍 Step 1: Fetch all bookings matching criteria from top-level bookings
+//     const bookingsSnapshot = await db
+//       .collection("bookings")
+//       .where("vendorId", "==", vendorId)
+//       .where("turfId", "==", turfId)
+//       .where("date", "==", date)
+//       .where("sports", "==", sports)
+//       .get();
+
+//     const bookedSlots = new Set();
+//     bookingsSnapshot.forEach((doc) => {
+//       bookedSlots.add(doc.data().timeSlot);
+//     });
+
+//     // 🏟️ Step 2: Fetch turf's all time slots
+//     const turfRef = db
+//       .collection("vendors")
+//       .doc(vendorId)
+//       .collection("turfs")
+//       .doc(turfId);
+//     const turfDoc = await turfRef.get();
+
+//     if (!turfDoc.exists) {
+//       return res.status(404).json({ message: "Turf not found" });
+//     }
+
+//     const allSlots = turfDoc.data().timeSlots || [];
+
+//     // ✅ Step 3: Filter out already booked slots
+//     const availableSlots = allSlots.filter((slot) => !bookedSlots.has(slot));
+
+//     res.status(200).json({
+//       turfId,
+//       sports,
+//       date,
+//       availableSlots,
+//       totalAvailable: availableSlots.length,
+//     });
+//   } catch (err) {
+//     console.error("Error fetching available slots:", err);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// });
+
 router.post("/bookings/available-slots", checkUserAuth, async (req, res) => {
   try {
     const { vendorId, turfId, date, sports } = req.body;
@@ -432,7 +484,33 @@ router.post("/bookings/available-slots", checkUserAuth, async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // 🔍 Step 1: Fetch all bookings matching criteria from top-level bookings
+    // ✅ Step 1: Fetch turf details first
+    const turfRef = db
+      .collection("vendors")
+      .doc(vendorId)
+      .collection("turfs")
+      .doc(turfId);
+    const turfDoc = await turfRef.get();
+
+    if (!turfDoc.exists) {
+      return res.status(404).json({ message: "Turf not found" });
+    }
+
+    const turfData = turfDoc.data();
+
+    // ✅ Step 2: Check if turf is suspended
+    if (turfData.isSuspended === 1) {
+      return res.status(200).json({
+        message: "This turf is currently suspended and cannot accept bookings.",
+        turfId,
+        availableSlots: [],
+        totalAvailable: 0,
+      });
+    }
+
+    const allSlots = turfData.timeSlots || [];
+
+    // ✅ Step 3: Fetch bookings for the given date & sports
     const bookingsSnapshot = await db
       .collection("bookings")
       .where("vendorId", "==", vendorId)
@@ -446,21 +524,7 @@ router.post("/bookings/available-slots", checkUserAuth, async (req, res) => {
       bookedSlots.add(doc.data().timeSlot);
     });
 
-    // 🏟️ Step 2: Fetch turf's all time slots
-    const turfRef = db
-      .collection("vendors")
-      .doc(vendorId)
-      .collection("turfs")
-      .doc(turfId);
-    const turfDoc = await turfRef.get();
-
-    if (!turfDoc.exists) {
-      return res.status(404).json({ message: "Turf not found" });
-    }
-
-    const allSlots = turfDoc.data().timeSlots || [];
-
-    // ✅ Step 3: Filter out already booked slots
+    // ✅ Step 4: Filter available slots
     const availableSlots = allSlots.filter((slot) => !bookedSlots.has(slot));
 
     res.status(200).json({
@@ -476,6 +540,87 @@ router.post("/bookings/available-slots", checkUserAuth, async (req, res) => {
   }
 });
 
+// router.post("/bookings/check-availability", checkUserAuth, async (req, res) => {
+//   try {
+//     const { vendorId, turfId, date, timeSlot, sports } = req.body;
+
+//     if (!vendorId || !turfId || !date || !timeSlot || !sports) {
+//       return res.status(400).json({ message: "Missing required fields" });
+//     }
+
+//     // Get slotStatus for the given turf and date
+//     const slotStatusRef = db
+//       .collection("vendors")
+//       .doc(vendorId)
+//       .collection("turfs")
+//       .doc(turfId)
+//       .collection("slotStatus")
+//       .doc(date);
+
+//     const slotDoc = await slotStatusRef.get();
+//     const slotData = slotDoc.exists ? slotDoc.data() : {};
+//     console.log("🔍 slotData keys:", Object.keys(slotData));
+//     console.log("⚽ sports:", sports);
+//     console.log("⏰ timeSlot:", timeSlot);
+//     console.log(
+//       "🧩 Inside data:",
+//       JSON.stringify(slotData[sports]?.[timeSlot], null, 2)
+//     );
+
+//     const normalizedSport = sports.trim().toLowerCase();
+//     const normalizedSlot = timeSlot.trim();
+
+//     const isBooked =
+//       slotData?.[normalizedSport]?.[normalizedSlot]?.booked === true;
+
+//     // Get all available time slots from turf metadata
+//     const turfRef = db
+//       .collection("vendors")
+//       .doc(vendorId)
+//       .collection("turfs")
+//       .doc(turfId);
+
+//     const turfDoc = await turfRef.get();
+//     if (!turfDoc.exists) {
+//       return res.status(404).json({ message: "Turf not found" });
+//     }
+
+//     const allSlots = turfDoc.data().timeSlots?.map((s) => s["slot"]) || [];
+
+//     if (!isBooked) {
+//       return res.status(200).json({
+//         available: true,
+//         message: "Slot is available",
+//       });
+//     }
+
+//     // Suggest nearby slots
+//     const index = allSlots.indexOf(timeSlot);
+//     const suggestions = [];
+
+//     // Check previous slot
+//     if (index > 0) {
+//       const prev = allSlots[index - 1];
+//       if (!slotData?.[sports]?.[prev]?.booked) suggestions.push(prev);
+//     }
+
+//     // Check next slot
+//     if (index < allSlots.length - 1) {
+//       const next = allSlots[index + 1];
+//       if (!slotData?.[sports]?.[next]?.booked) suggestions.push(next);
+//     }
+
+//     return res.status(200).json({
+//       available: false,
+//       message: "Slot already booked",
+//       suggestedSlots: suggestions,
+//     });
+//   } catch (err) {
+//     console.error("Error checking availability:", err);
+//     res.status(500).json({ message: "Internal server error" });
+//   }
+// });
+
 router.post("/bookings/check-availability", checkUserAuth, async (req, res) => {
   try {
     const { vendorId, turfId, date, timeSlot, sports } = req.body;
@@ -484,44 +629,47 @@ router.post("/bookings/check-availability", checkUserAuth, async (req, res) => {
       return res.status(400).json({ message: "Missing required fields" });
     }
 
-    // Get slotStatus for the given turf and date
-    const slotStatusRef = db
-      .collection("vendors")
-      .doc(vendorId)
-      .collection("turfs")
-      .doc(turfId)
-      .collection("slotStatus")
-      .doc(date);
-
-    const slotDoc = await slotStatusRef.get();
-    const slotData = slotDoc.exists ? slotDoc.data() : {};
-    console.log("🔍 slotData keys:", Object.keys(slotData));
-    console.log("⚽ sports:", sports);
-    console.log("⏰ timeSlot:", timeSlot);
-    console.log(
-      "🧩 Inside data:",
-      JSON.stringify(slotData[sports]?.[timeSlot], null, 2)
-    );
-
+    // ✅ Normalize sport and slot names
     const normalizedSport = sports.trim().toLowerCase();
     const normalizedSlot = timeSlot.trim();
 
-    const isBooked =
-      slotData?.[normalizedSport]?.[normalizedSlot]?.booked === true;
-
-    // Get all available time slots from turf metadata
+    // ✅ Step 1: Get turf details (check suspension)
     const turfRef = db
       .collection("vendors")
       .doc(vendorId)
       .collection("turfs")
       .doc(turfId);
-
     const turfDoc = await turfRef.get();
+
     if (!turfDoc.exists) {
       return res.status(404).json({ message: "Turf not found" });
     }
 
-    const allSlots = turfDoc.data().timeSlots?.map((s) => s["slot"]) || [];
+    const turfData = turfDoc.data();
+
+    // ✅ If turf is suspended → return not available
+    if (turfData.isSuspended === 1) {
+      return res.status(200).json({
+        available: false,
+        message: "This turf is currently suspended and cannot accept bookings.",
+        suggestedSlots: [],
+      });
+    }
+
+    // ✅ Step 2: Fetch slotStatus for the given date
+    const slotStatusRef = turfRef.collection("slotStatus").doc(date);
+    const slotDoc = await slotStatusRef.get();
+    const slotData = slotDoc.exists ? slotDoc.data() : {};
+
+    console.log("🔍 slotData keys:", Object.keys(slotData));
+    console.log("⚽ normalizedSport:", normalizedSport);
+    console.log("⏰ normalizedSlot:", normalizedSlot);
+
+    const isBooked =
+      slotData?.[normalizedSport]?.[normalizedSlot]?.booked === true;
+
+    // ✅ Get all slots from turf metadata
+    const allSlots = (turfData.timeSlots || []).map((s) => s["slot"]);
 
     if (!isBooked) {
       return res.status(200).json({
@@ -530,20 +678,20 @@ router.post("/bookings/check-availability", checkUserAuth, async (req, res) => {
       });
     }
 
-    // Suggest nearby slots
-    const index = allSlots.indexOf(timeSlot);
+    // ✅ Suggest nearby slots
+    const index = allSlots.indexOf(normalizedSlot);
     const suggestions = [];
 
-    // Check previous slot
+    // Previous slot
     if (index > 0) {
       const prev = allSlots[index - 1];
-      if (!slotData?.[sports]?.[prev]?.booked) suggestions.push(prev);
+      if (!slotData?.[normalizedSport]?.[prev]?.booked) suggestions.push(prev);
     }
 
-    // Check next slot
+    // Next slot
     if (index < allSlots.length - 1) {
       const next = allSlots[index + 1];
-      if (!slotData?.[sports]?.[next]?.booked) suggestions.push(next);
+      if (!slotData?.[normalizedSport]?.[next]?.booked) suggestions.push(next);
     }
 
     return res.status(200).json({
