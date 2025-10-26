@@ -508,131 +508,8 @@ router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
 //   }
 // );
 
-router.post(
-  "/admin/vendors/:vendorId/turfs",
-  checkAdminAuth,
-  async (req, res) => {
-    try {
-      const { vendorId } = req.params;
-      const {
-        title,
-        address,
-        description,
-        sports,
-        amenities,
-        rules,
-        images,
-        cancellationHours = 0,
-        featured = 0,
-      } = req.body;
 
-      if (
-        !title ||
-        !address ||
-        !description ||
-        !sports ||
-        !amenities ||
-        !rules ||
-        !images
-      ) {
-        return res
-          .status(400)
-          .json({ message: "Missing required turf fields" });
-      }
-
-      // ✅ Step 1: Fetch vendor details
-      const vendorRef = db.collection("vendors").doc(vendorId);
-      const vendorDoc = await vendorRef.get();
-
-      if (!vendorDoc.exists) {
-        return res.status(404).json({ message: "Vendor not found" });
-      }
-
-      const vendorData = vendorDoc.data();
-      const vendorLocation = vendorData.location || "";
-      const vendorGpsUrl = vendorData.gpsUrl || "";
-      const vendorCoordinates = vendorData.coordinates || null;
-
-      // ✅ Step 2: Process sports with courts & details
-      // sports format in request:
-      // [
-      //   {
-      //     name: "Football",
-      //     slotPrice: 500,
-      //     discountedPrice: 400,
-      //     weekendPrice: 600,
-      //     timings: [{ start: "06:00", end: "10:00" }],
-      //     courts: ["Court A", "Court B"]
-      //   }
-      // ]
-      const sportsData = sports.map((sport) => ({
-        name: sport.name,
-        slotPrice: sport.slotPrice,
-        discountedPrice: sport.discountedPrice ?? 0,
-        weekendPrice: sport.weekendPrice ?? 0,
-        timings: sport.timings || [],
-        courts: sport.courts || [],
-      }));
-
-      // ✅ Step 3: Fetch amenities details
-      let amenitiesData = [];
-      if (amenities.length > 0) {
-        const amenitiesDocs = await Promise.all(
-          amenities.map((id) => db.collection("amenities_master").doc(id).get())
-        );
-        amenitiesData = amenitiesDocs
-          .filter((doc) => doc.exists)
-          .map((doc) => ({ id: doc.id, ...doc.data() }));
-      }
-
-      // ✅ Step 4: Fetch rules details
-      let rulesData = [];
-      if (rules.length > 0) {
-        const rulesDocs = await Promise.all(
-          rules.map((id) => db.collection("rules_master").doc(id).get())
-        );
-        rulesData = rulesDocs
-          .filter((doc) => doc.exists)
-          .map((doc) => ({ id: doc.id, ...doc.data() }));
-      }
-
-      // ✅ Step 5: Prepare turf data
-      const turfData = {
-        title,
-        address,
-        description,
-        sports: sportsData,
-        amenities: amenitiesData,
-        rules: rulesData,
-        images,
-        vendorId,
-        vendorLocation,
-        vendorGpsUrl,
-        vendorCoordinates,
-        createdAt: new Date().toISOString(),
-        cancellationHours,
-        featured,
-        isSuspended: 0, // default active
-      };
-
-      // ✅ Step 6: Save to Firestore
-      const turfRef = await vendorRef.collection("turfs").add(turfData);
-
-      // ✅ Step 7: Return response
-      res.status(201).json({
-        message: "Turf added successfully",
-        vendorId,
-        turfId: turfRef.id,
-        turf: turfData,
-      });
-    } catch (err) {
-      console.error("❌ Error adding turf:", err);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  }
-);
-
-router.get("/vendors/:id/turfs", checkAdminAuth,async (req, res) => {
+router.get("/vendors/:id/turfs", checkAdminAuth, async (req, res) => {
   try {
     const vendorId = req.params.id;
 
@@ -674,7 +551,7 @@ router.get("/vendors/:id/turfs", checkAdminAuth,async (req, res) => {
         thumbnail: turf.images?.[0] || null,
         cancellationHour: turf.cancellationHour || null, // ✅ New Field
         featured: turf.featured || false, // ✅ New Field
-        isSuspended: turf.isSuspended || false // ✅ New Field
+        isSuspended: turf.isSuspended || false, // ✅ New Field
       });
     });
 
@@ -684,7 +561,6 @@ router.get("/vendors/:id/turfs", checkAdminAuth,async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
 
 router.get("/admin/turfs", checkAdminAuth, async (req, res) => {
   try {
@@ -766,44 +642,53 @@ router.put(
   }
 );
 
-router.patch("/admin/turfs/:vendorId/:turfId/suspend",checkAdminAuth, async (req, res) => {
-  try {
-    const { vendorId, turfId } = req.params;
-    const { isSuspended } = req.body; // 1 or 0
+router.patch(
+  "/admin/turfs/:vendorId/:turfId/suspend",
+  checkAdminAuth,
+  async (req, res) => {
+    try {
+      const { vendorId, turfId } = req.params;
+      const { isSuspended } = req.body; // 1 or 0
 
-    if (typeof isSuspended === "undefined") {
-      return res.status(400).json({ message: "isSuspended is required" });
+      if (typeof isSuspended === "undefined") {
+        return res.status(400).json({ message: "isSuspended is required" });
+      }
+
+      // Turf reference
+      const turfRef = db
+        .collection("vendors")
+        .doc(vendorId)
+        .collection("turfs")
+        .doc(turfId);
+      const turfDoc = await turfRef.get();
+
+      if (!turfDoc.exists) {
+        return res.status(404).json({ message: "Turf not found" });
+      }
+
+      // Update the turf
+      await turfRef.update({ isSuspended: Number(isSuspended) });
+
+      // Fetch updated turf
+      const updatedTurfDoc = await turfRef.get();
+      const updatedTurf = updatedTurfDoc.data();
+
+      // Add turfId to the response for clarity
+      updatedTurf.turfId = turfId;
+
+      res.status(200).json({
+        message:
+          isSuspended == 1
+            ? "Turf suspended successfully"
+            : "Turf unsuspended successfully",
+        turf: updatedTurf,
+      });
+    } catch (error) {
+      console.error("Error updating turf suspension:", error);
+      res.status(500).json({ message: "Internal server error" });
     }
-
-    // Turf reference
-    const turfRef = db.collection("vendors").doc(vendorId).collection("turfs").doc(turfId);
-    const turfDoc = await turfRef.get();
-
-    if (!turfDoc.exists) {
-      return res.status(404).json({ message: "Turf not found" });
-    }
-
-    // Update the turf
-    await turfRef.update({ isSuspended: Number(isSuspended) });
-
-    // Fetch updated turf
-    const updatedTurfDoc = await turfRef.get();
-    const updatedTurf = updatedTurfDoc.data();
-
-    // Add turfId to the response for clarity
-    updatedTurf.turfId = turfId;
-
-    res.status(200).json({
-      message: isSuspended == 1 ? "Turf suspended successfully" : "Turf unsuspended successfully",
-      turf: updatedTurf,
-    });
-  } catch (error) {
-    console.error("Error updating turf suspension:", error);
-    res.status(500).json({ message: "Internal server error" });
   }
-});
-
-
+);
 
 router.delete(
   "/admin/vendors/:vendorId/turfs/:turfId",
