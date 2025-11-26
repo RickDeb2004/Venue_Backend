@@ -196,6 +196,141 @@ router.put("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 });
+router.post(
+  "/admin/vendors/:vendorId/turfs",
+  checkAdminAuth,
+  async (req, res) => {
+    try {
+      const { vendorId } = req.params;
+
+      let {
+        title,
+        address,
+        description,
+        sports,
+        amenities,
+        rules,
+        images,
+        cancellationHours = 0,
+        featured = 0,
+      } = req.body;
+
+      // ✅ Step 1: Parse JSON fields if they come as strings
+      try {
+        if (typeof sports === "string") sports = JSON.parse(sports);
+        if (typeof amenities === "string") amenities = JSON.parse(amenities);
+        if (typeof rules === "string") rules = JSON.parse(rules);
+        if (typeof images === "string") images = JSON.parse(images);
+      } catch (parseError) {
+        console.error("❌ JSON parse error:", parseError.message);
+        return res
+          .status(400)
+          .json({ message: "Invalid JSON format in request body" });
+      }
+
+      // Validate required fields
+      if (
+        !title ||
+        !address ||
+        !description ||
+        !sports ||
+        !amenities ||
+        !rules ||
+        !images
+      ) {
+        return res
+          .status(400)
+          .json({ message: "Missing required turf fields" });
+      }
+
+      // ✅ Step 2: Fetch vendor details
+      const vendorRef = db.collection("vendors").doc(vendorId);
+      const vendorDoc = await vendorRef.get();
+
+      if (!vendorDoc.exists) {
+        return res.status(404).json({ message: "Vendor not found" });
+      }
+
+      const vendorData = vendorDoc.data();
+      const vendorLocation = vendorData.location || "";
+      const vendorGpsUrl = vendorData.gpsUrl || "";
+      const vendorCoordinates = vendorData.coordinates || null;
+
+      // ✅ Step 3: Process sports with timeSlots + courts
+      const sportsData = (sports || []).map((sport) => ({
+        name: sport.name,
+        slotPrice: sport.slotPrice,
+        discountedPrice: sport.discountedPrice ?? 0,
+        weekendPrice: sport.weekendPrice ?? 0,
+        timeSlots: sport.timeSlots || sport.timings || [],
+        courts: sport.courts || [],
+      }));
+
+      // ✅ Step 4: Fetch amenities details
+      let amenitiesData = [];
+      if (amenities && amenities.length > 0) {
+        const amenitiesDocs = await Promise.all(
+          amenities.map((id) => db.collection("amenities_master").doc(id).get())
+        );
+
+        amenitiesData = amenitiesDocs
+          .filter((doc) => doc.exists)
+          .map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+      }
+
+      // ✅ Step 5: Fetch rules details
+      let rulesData = [];
+      if (rules && rules.length > 0) {
+        const rulesDocs = await Promise.all(
+          rules.map((id) => db.collection("rules_master").doc(id).get())
+        );
+
+        rulesData = rulesDocs
+          .filter((doc) => doc.exists)
+          .map((doc) => ({
+            id: doc.id,
+            ...doc.data(),
+          }));
+      }
+
+      // ✅ Step 6: Prepare turf data
+      const turfData = {
+        title,
+        address,
+        description,
+        sports: sportsData,
+        amenities: amenitiesData,
+        rules: rulesData,
+        images,
+        vendorId,
+        vendorLocation,
+        vendorGpsUrl,
+        vendorCoordinates,
+        createdAt: new Date().toISOString(),
+        cancellationHours,
+        featured,
+        isSuspended: 0, // Active by default
+      };
+
+      // ✅ Step 7: Save to Firestore
+      const turfRef = await vendorRef.collection("turfs").add(turfData);
+
+      // ✅ Step 8: Return response
+      res.status(201).json({
+        message: "Turf added successfully",
+        vendorId,
+        turfId: turfRef.id,
+        turf: turfData,
+      });
+    } catch (err) {
+      console.error("❌ Error adding turf:", err);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  }
+);
 
 router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
   try {
@@ -507,7 +642,6 @@ router.delete("/admin/vendors/:vendorId", checkAdminAuth, async (req, res) => {
 //     }
 //   }
 // );
-
 
 router.get("/vendors/:id/turfs", checkAdminAuth, async (req, res) => {
   try {
